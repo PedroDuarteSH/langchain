@@ -20,7 +20,16 @@ class LlamaCppEmbeddings(BaseModel, Embeddings):
     """
 
     client: Any = None  #: :meta private:
-    model_path: str = Field(default="")
+    """The Llama client object."""
+    
+    model_path: Optional[str] = Field(default=None, alias="model_path")
+    """Path to the Llama model file."""
+    
+    repo_id: Optional[str] = Field(default=None, alias="repo_id")
+    """Repository ID for the model, if using from_pretrained method."""
+    
+    filename: Optional[str] = Field(default=None, alias="filename")
+    """Filename for the model, if using from_pretrained method."""
 
     n_ctx: int = Field(512, alias="n_ctx")
     """Token context window."""
@@ -66,6 +75,8 @@ class LlamaCppEmbeddings(BaseModel, Embeddings):
         protected_namespaces=(),
     )
 
+     
+
     @model_validator(mode="after")
     def validate_environment(self) -> Self:
         """Validate that llama-cpp-python library is installed."""
@@ -82,6 +93,7 @@ class LlamaCppEmbeddings(BaseModel, Embeddings):
             "n_batch",
             "verbose",
             "device",
+            "filename"
         ]
         model_params = {k: getattr(self, k) for k in model_param_names}
         # For backwards compatibility, only include if non-null.
@@ -89,10 +101,20 @@ class LlamaCppEmbeddings(BaseModel, Embeddings):
             model_params["n_gpu_layers"] = self.n_gpu_layers
 
         if not self.client:
+            if not model_path and not self.repo_id:
+                raise ValueError(
+                    "You must provide either a model_path or a repo_id to load a LlamaCPP embeddings model."
+                )
+            if model_path and self.repo_id:
+                raise ValueError("Only one of model_path or repo_id can be provided, not both.")
+            
             try:
-                from llama_cpp import Llama
-
-                self.client = Llama(model_path, embedding=True, **model_params)
+                if self.repo_id:
+                    from llama_cpp import Llama
+                    self.client = Llama.from_pretrained(self.repo_id, embedding=True, **model_params)
+                if model_path:
+                    from llama_cpp import Llama
+                    self.client = Llama(model_path, embedding=True, **model_params)
             except ImportError:
                 raise ImportError(
                     "Could not import llama-cpp-python library. "
@@ -101,10 +123,9 @@ class LlamaCppEmbeddings(BaseModel, Embeddings):
                 )
             except Exception as e:
                 raise ValueError(
-                    f"Could not load Llama model from path: {model_path}. "
+                    f"Could not load Llama model from path: {model_path} or repo_id: {self.repo_id}. "
                     f"Received error {e}"
                 )
-
         return self
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
@@ -116,18 +137,8 @@ class LlamaCppEmbeddings(BaseModel, Embeddings):
         Returns:
             List of embeddings, one for each text.
         """
-        embeddings = self.client.create_embedding(texts)
-        final_embeddings = []
-        for e in embeddings["data"]:
-            try:
-                if isinstance(e["embedding"][0], list):
-                    for data in e["embedding"]:
-                        final_embeddings.append(list(map(float, data)))
-                else:
-                    final_embeddings.append(list(map(float, e["embedding"])))
-            except (IndexError, TypeError):
-                final_embeddings.append(list(map(float, e["embedding"])))
-        return final_embeddings
+        return self.client.create_embedding(texts)
+        
 
     def embed_query(self, text: str) -> List[float]:
         """Embed a query using the Llama model.
@@ -138,8 +149,5 @@ class LlamaCppEmbeddings(BaseModel, Embeddings):
         Returns:
             Embeddings for the text.
         """
-        embedding = self.client.embed(text)
-        if not isinstance(embedding, list):
-            return list(map(float, embedding))
-        else:
-            return list(map(float, embedding[0]))
+        return self.client.embed(text)
+        
